@@ -1,30 +1,16 @@
-/*
- * ESP32-C3 Continuous Wave (CW) Generator - Alternative Method
- * Uses esp_wifi_80211_tx for continuous transmission
- */
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_phy_init.h"
-#include "esp_wifi_types.h"
 
-static const char *TAG = "CW_GEN";
+// Try different function names based on your SDK version
+extern "C" {
+    void phy_tx_contin_en(bool enable);
+}
 
-// Minimal WiFi frame for continuous transmission
-static const uint8_t cw_packet[] = {
-    0x08, 0x00,             // Frame Control
-    0x00, 0x00,             // Duration
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Destination
-    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,  // Source
-    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,  // BSSID
-    0x00, 0x00              // Sequence Control
-};
-
-extern "C" void app_main(void)
-{
+void app_main(void) {
     // 1. Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -33,43 +19,46 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // 2. Initialize Wi-Fi
+    // 2. Initialize WiFi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    // 3. Configure High Power
+    
+    // 3. Configure power BEFORE starting
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80)); // Max power
-
-    // 4. Set Target Channel
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80)); // 20dBm
+    
+    // 4. Set channel BEFORE starting
     int channel = 1;
     ESP_ERROR_CHECK(esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE));
+    
+    // 5. Start WiFi
+    ESP_ERROR_CHECK(esp_wifi_start());
+    
+    vTaskDelay(500 / portTICK_PERIOD_MS); // Let WiFi stabilize
 
-    ESP_LOGI(TAG, "CW Generator Started");
-    ESP_LOGI(TAG, "Frequency: %d MHz (Channel %d)", 2412 + (channel-1)*5, channel);
-    ESP_LOGI(TAG, "Power: MAX (20dBm)");
+    printf("=== CW GENERATOR STARTED ===\n");
+    printf("Frequency: 2412 MHz (Channel 1)\n");
+    printf("Power: 20dBm (MAX)\n");
 
-    // 5. Continuous transmission using 802.11 frame injection
+    // 6. Enable CW mode
+    phy_tx_contin_en(true);
+    printf("CW transmission enabled!\n");
+
+    // 7. Main loop with channel hopping
     while (1) {
-        // Transmit frames continuously with minimal delay
-        // This creates a near-continuous RF output
-        esp_wifi_80211_tx(WIFI_IF_STA, cw_packet, sizeof(cw_packet), false);
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
         
-        // Minimal delay to flood the air
-        vTaskDelay(1 / portTICK_PERIOD_MS);
+        phy_tx_contin_en(false);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
         
-        // Optional: Channel hopping (uncomment to enable)
+        channel = (channel % 14) + 1;
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
         
-        static int hop_counter = 0;
-        if (++hop_counter > 1000) {
-            hop_counter = 0;
-            channel = (channel % 14) + 1;
-            esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-            ESP_LOGI(TAG, "Hopped to channel %d", channel);
-        }
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        phy_tx_contin_en(true);
         
+        printf("CH%d (2%d MHz)\n", channel, 412 + (channel-1)*5);
     }
 }
